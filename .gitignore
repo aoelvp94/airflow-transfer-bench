@@ -1,0 +1,15 @@
+# build outputs
+impls/go/dist/
+impls/java/target/
+impls/typescript/dist/
+impls/typescript/node_modules/
+
+# results are regenerated per machine; commit a snapshot deliberately if wanted
+results/*
+!results/.gitkeep
+
+__pycache__/
+*.pyc
+.DS_Store
+.env
+logs/

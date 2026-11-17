@@ -1,0 +1,20 @@
+{
+  "name": "transfer-bench-typescript",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "bundle": "tsc --noEmit && airflow-ts-pack src/main.ts --outfile dist/transfer_bench_ts.min.mjs"
+  },
+  "dependencies": {
+    "@apache-airflow/ts-sdk": "^1.0.0",
+    "@aws-sdk/client-s3": "^3.1170.0",
+    "postgres": "^4.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}
