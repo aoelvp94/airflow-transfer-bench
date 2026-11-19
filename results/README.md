@@ -30,7 +30,7 @@ across environments as a single trend.
 
 | airflow | date | env | rows | n | git | md5 | path |
 |---|---|---|---:|---:|---|---|---|
-| | | | | | | | _No published runs yet._ |
+| 3.4.0 | 2026-11-19 | intel-xeon-processor | 200000 | 4 | `092631ccf692` | pass 1dd073f34ef3 | [3.4.0/2026-11-19-intel-xeon-processor](3.4.0/2026-11-19-intel-xeon-processor/summary.md) |
 
 ## Trend by environment
 
@@ -40,4 +40,14 @@ after one discarded warm-up. MiB/s is median throughput over `work_s`
 Only runs that followed the protocol are included: at least 5 triggered
 runs, 1 warm-up discarded, the MD5 gate passed, and a clean git tree.
 
-_No protocol runs yet._
+### `intel-xeon-processor`
+
+| airflow | sdk go/java/ts | date | rows | n | go | java | typescript | python | sql_to_s3 |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 3.4.0 | 1.0.0 / 1.0.0 / 1.0.0 | 2026-11-19 | 200000 | 4 | 0.42 | 1.23 | 0.81 | 1.32 | 2.10 |
+
+MiB/s median:
+
+| airflow | sdk go/java/ts | date | rows | n | go | java | typescript | python | sql_to_s3 |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 3.4.0 | 1.0.0 / 1.0.0 / 1.0.0 | 2026-11-19 | 200000 | 4 | 73.9 | 28.3 | 37.0 | 28.1 | 15.7 |
