@@ -9,3 +9,7 @@ __pycache__/
 .DS_Store
 .env
 logs/
+
+# Local bench output. The committed record is RESULTS.md.
+results/*
+!results/.gitkeep

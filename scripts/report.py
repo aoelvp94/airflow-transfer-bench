@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Collect transfer_bench results and write results/<airflow>/<date>-<slug>/.
+"""Collect transfer_bench results.
 
-Run inside the scheduler container (`make report`). The directory holds raw
-per-run CSV/JSON, summary.md, and environment.json. This script also rewrites
-results/README.md.
+Run inside the scheduler container (`make report`). Raw per-run CSV/JSON and
+summary.md are written under results/ and are gitignored. The committed record
+is RESULTS.md at the repo root: one changelog entry per run. The same dag run
+ids replace that entry.
 
-`--index-only` rebuilds the index from files already on disk and does not need
-Airflow. The byte-identical MD5 check is a hard gate: a mismatch still writes
-the raw files, then exits 1 so CI will not open a results PR.
+`--index-only` re-renders RESULTS.md from the entries already in it and does
+not need Airflow. The byte-identical MD5 check is a hard gate: a mismatch still
+writes the raw files and the entry, then exits 1 so CI will not open a results PR.
 """
 
 from __future__ import annotations
@@ -42,11 +43,14 @@ from report_lib import (  # noqa: E402
     parse_mem_max,
     parse_node_version,
     parse_numbered_runtime,
+    load_entries,
+    published_entry,
     render_summary_md,
     sanitize_run_id,
     split_warmup,
     summarize_tasks,
-    write_index,
+    upsert_entry,
+    write_results,
     write_text_atomic,
 )
 
@@ -60,6 +64,13 @@ def results_root() -> Path:
     if override:
         return Path(override)
     return Path(__file__).resolve().parent.parent / "results"
+
+
+def results_markdown() -> Path:
+    override = os.environ.get("BENCH_RESULTS_MD")
+    if override:
+        return Path(override)
+    return Path(__file__).resolve().parent.parent / "RESULTS.md"
 
 
 def decode(value):
@@ -383,11 +394,21 @@ def order_runs(records: list[dict]) -> list[str]:
     return ordered
 
 
+def publish_entry(meta: dict, task_stats: dict) -> Path:
+    path = results_markdown()
+    existing = load_entries(path.read_text()) if path.is_file() else []
+    write_results(path, upsert_entry(existing, published_entry(meta, task_stats)))
+    return path
+
+
 def main() -> None:
     root = results_root()
     if "--index-only" in sys.argv:
-        text = write_index(root)
+        path = results_markdown()
+        existing = load_entries(path.read_text()) if path.is_file() else []
+        text = write_results(path, existing)
         print(text)
+        print(f"BENCH_RESULTS_MD={path}")
         return
 
     records, prepares, summarize_states = collect()
@@ -494,11 +515,11 @@ def main() -> None:
         )
         write_csv(runs_dir / f"{safe}.csv", run_records)
 
-    index = write_index(root)
+    changelog = publish_entry(meta, task_stats)
     rel = run_dir.relative_to(root.parent).as_posix()
     print(summary)
-    print(index)
     print(f"BENCH_RUN_DIR={rel}")
+    print(f"BENCH_RESULTS_MD={changelog}")
     if problems:
         print("BENCH_GATE=fail", file=sys.stderr)
         for problem in problems:

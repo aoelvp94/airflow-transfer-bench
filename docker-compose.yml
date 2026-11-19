@@ -57,6 +57,9 @@ x-airflow-common: &airflow-common
     - ./dags:/opt/airflow/dags
     - ./scripts:/opt/airflow/scripts
     - ./results:/opt/airflow/results
+    # File mount so `make report` inside the scheduler updates the repo's changelog.
+    # The file has to exist before `compose up` (a missing source becomes a directory).
+    - ./RESULTS.md:/opt/airflow/RESULTS.md
   depends_on: &airflow-depends
     postgres:
       condition: service_healthy

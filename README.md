@@ -59,27 +59,29 @@ All five files had the same MD5. Treat these numbers as one machine's numbers
 and run it yourself. The very first run after `make up` was several times
 slower for every task (cold containers), so use `RUNS ≥ 3` and medians.
 
-That table is Aldo's local run. It is not copied into `results/`, and it has
-no `cpu_s` column because that metric was added after it was recorded. Do not
-treat it as a published data point or extend it.
+That table is Aldo's local run. It is not an entry in [`RESULTS.md`](RESULTS.md),
+and it has no `cpu_s` column because that metric was added after it was
+recorded. Do not treat it as a published data point or extend it.
 
 ## Published results
 
-Committed runs live under [`results/`](results/README.md). `make report` writes
+The committed record is [`RESULTS.md`](RESULTS.md): a changelog, newest entry
+first, one section per run. `make report` prepends that section (the same
+Airflow dag run ids replace it) and writes the raw files locally:
 
 ```
-results/<airflow-version>/<YYYY-MM-DD>-<env-slug>/
+results/<airflow-version>/<YYYY-MM-DD>-<env-slug>/   gitignored
   environment.json     Airflow, each SDK, Go/JDK/Node/CPython, CPU, limits, rows, fetch_size, part_size, git SHA, n
   summary.md           median, min, max, bootstrap 95% CI
   stats.json
   results.csv          every task of every run, warm-up included
   runs/<run_id>.json   raw per-run records
   runs/<run_id>.csv
-  benchmark.json       customSmallerIsBetter (task_s, work_s, cpu_s)
+  benchmark.json       customSmallerIsBetter (task_s, work_s, cpu_s); CI copies this to gh-pages only
 ```
 
-and refreshes the index. The index groups trends by environment. A number from
-`github-actions` and a number from a laptop are not one series.
+`RESULTS.md` groups the trend by environment. A number from `github-actions`
+and a number from a laptop are not one series.
 
 The protocol for a run that shows up in the trend table:
 
@@ -106,23 +108,23 @@ AIRFLOW_VERSION=3.4.0 GO_SDK_VERSION=1.0.0 JAVA_SDK_VERSION=1.0.0 TS_SDK_VERSION
 - **`workflow_dispatch`** takes `airflow_version`, `go_sdk_version`,
   `java_sdk_version`, `ts_sdk_version`, `supervisor_schema_version`, `rows`
   (default 200000), and `runs` (default 5). It builds that combination, seeds,
-  benches, and opens a pull request with `results/<version>/…`.
+  benches, and opens a pull request that changes only `RESULTS.md`.
 - **Weekly schedule** (Monday 06:17 UTC) reads PyPI and runs only when the
   newest stable `apache-airflow` at or above 3.4.0 has no `github-actions`
   run yet. SDK versions stay at 1.0.0 unless someone dispatches other values.
   A laptop run of the same Airflow version does not suppress this.
 
-The same workflow publishes `benchmark.json` through
+The same workflow generates `benchmark.json` and publishes it through
 [benchmark-action/github-action-benchmark](https://github.com/benchmark-action/github-action-benchmark)
 (`tool: customSmallerIsBetter`) onto the `gh-pages` branch, under `dev/bench`.
-That chart is fed only by this workflow. Pointing it at a laptop `benchmark.json`
-would mix machines into one line.
+That file is not committed to `main`. The chart is fed only by this workflow.
+Pointing it at a laptop `benchmark.json` would mix machines into one line.
 
 GitHub-hosted runners are noisy. CI numbers track trends and regressions across
 releases. They are not absolute speed, and they are not comparable with the
 Apple M4 sample above. The CI scheduler cap is 2 CPU / 3 GB, not the sample's
 2 CPU / 6 GB, and the row count defaults to 200,000 rather than 1,000,000.
-`summary.md` for those runs repeats this.
+The `RESULTS.md` entry for those runs repeats this.
 
 This workflow does not change repository settings. A maintainer still has to:
 
@@ -147,7 +149,7 @@ the image.
 make up                 # build image (~8 min first time), start Airflow, Postgres, S3
 make seed ROWS=1000000  # create bench.events
 make bench              # 5 runs; the first is a discarded warm-up
-make report             # results/<airflow-version>/<YYYY-MM-DD>-<env-slug>/
+make report             # gitignored results/ plus one RESULTS.md entry
 ```
 
 Airflow UI: <http://localhost:8080> (local-only setup, every user is admin).
@@ -158,28 +160,31 @@ the UI, or try other sizes with `make seed ROWS=10000000`. `BENCH_CPUS` and
 
 ## How to contribute a run
 
-A published run is a pull request that adds one directory under `results/` and
-the regenerated `results/README.md`. Do not edit the Apple M4 sample above, and
-do not put that sample into `results/`.
+A published run is a pull request that changes [`RESULTS.md`](RESULTS.md) and
+nothing else. Do not edit the Apple M4 sample above, and do not add that
+sample as an entry. Do not commit `results/`; those files are local.
 
 ```bash
 make up
 make seed ROWS=1000000          # or another size; the metadata records the size you actually loaded
 make bench                      # RUNS=5
-make report                     # captures the environment, checks MD5, refreshes the index
-git add results
-git status                      # only results/<version>/<date>-<slug>/ and results/README.md
+make report                     # captures the environment, checks MD5, prepends RESULTS.md
+git add RESULTS.md
+git status                      # only RESULTS.md
 ```
 
-Open a pull request. `make report` fills `environment.json` from the running
+Open a pull request. `make report` reads the environment from the running
 container and from the git checkout: Airflow version, each SDK version, Go,
 JDK, Node, and CPython versions, CPU model, the scheduler CPU and memory
-limits, rows, `fetch_size`, `part_size`, git SHA, and `n`.
+limits, rows, `fetch_size`, `part_size`, git SHA, and `n`. That metadata is
+the compact line in the new `RESULTS.md` section. The raw CSV and JSON stay
+under `results/` on your machine.
 
 `BENCH_ENV_SLUG=apple-m4 make report` overrides the slug derived from the CPU
-model. The slug is the directory name. Do not reuse a directory that already
-belongs to a different machine. Re-running `make report` on the same dag run
-ids overwrites that directory; a different set of run ids gets a numeric suffix.
+model. The slug is part of the section heading. Re-running `make report` on
+the same dag run ids replaces that section. A different set of run ids is
+prepended. Raw files for a repeated date and slug still land in
+`results/<version>/<date>-<slug>/`, with a numeric suffix when the run ids differ.
 
 `AIRFLOW_VERSION`, `GO_SDK_VERSION`, `JAVA_SDK_VERSION`, and `TS_SDK_VERSION`
 select the image. Change them before `make up`, not after, or the metadata
@@ -204,7 +209,8 @@ impls/
 docker/airflow.Dockerfile    multi-stage: builds the 3 bundles, adds JRE 17 + Node 22 to apache/airflow:3.4.0
 docker-compose.yml           Airflow (LocalExecutor) + Postgres 17 + Versity S3 Gateway
 scripts/                     bucket setup, run loop, report, CI entrypoint
-results/                     published runs and the generated index
+RESULTS.md                   committed changelog (one section per run)
+results/                     local raw output, gitignored except .gitkeep
 .github/workflows/benchmark.yml
 sql/                         source DB init + seed
 ```

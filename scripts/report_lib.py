@@ -1,8 +1,8 @@
 """Pure helpers for the transfer benchmark report.
 
 No Airflow imports. ``scripts/report.py`` collects rows from the metadata DB
-and calls into this module to drop the warm-up run, summarize, and write the
-published-results index.
+and calls into this module to drop the warm-up run, summarize, and prepend a
+changelog entry to ``RESULTS.md``.
 """
 
 from __future__ import annotations
@@ -198,21 +198,39 @@ def pypi_stable_versions(payload: dict) -> list[str]:
     return found
 
 
-def has_ci_run(results: Path, version: str) -> bool:
-    """True when this Airflow version already has a GitHub-hosted published run.
+_ENTRY_RE = re.compile(r"<!-- bench-entry (.*?) -->", re.DOTALL)
 
-    A laptop or other local run under the same version does not count: the
-    scheduled workflow exists to put a ``github-actions`` point on the trend.
-    """
-    parent = results / version
-    if not parent.is_dir():
-        return False
-    for env_path in parent.glob("*/environment.json"):
+
+def load_entries(text: str) -> list[dict]:
+    """Entries embedded in ``RESULTS.md``. Malformed comments are skipped."""
+    entries = []
+    for match in _ENTRY_RE.finditer(text or ""):
         try:
-            meta = json.loads(env_path.read_text())
+            payload = json.loads(match.group(1))
         except json.JSONDecodeError:
             continue
-        if meta.get("ci") is True or meta.get("env_slug") == "github-actions":
+        if isinstance(payload, dict):
+            entries.append(payload)
+    return entries
+
+
+def _is_ci_entry(entry: dict) -> bool:
+    return entry.get("ci") is True or entry.get("env_slug") == "github-actions"
+
+
+def has_ci_run(results_md: Path, version: str) -> bool:
+    """True when ``RESULTS.md`` already records a GitHub-hosted run of this version.
+
+    A laptop entry for the same Airflow version does not count: the scheduled
+    workflow exists to put a ``github-actions`` point on the trend. Raw files
+    under ``results/`` are local and are not consulted.
+    """
+    if not results_md.is_file():
+        return False
+    for entry in load_entries(results_md.read_text()):
+        if str(entry.get("airflow_version") or "") != version:
+            continue
+        if _is_ci_entry(entry):
             return True
     return False
 
@@ -402,47 +420,9 @@ def render_summary_md(meta: dict, task_stats: dict, md5_info: dict) -> str:
             "",
         ]
     )
-    if md5_info.get("ok"):
-        lines.append(f"Byte-identical MD5 gate: pass (`{md5_info.get('digest')}`).")
-    else:
-        lines.append("Byte-identical MD5 gate: FAIL.")
-        for failure in md5_info.get("failures") or []:
-            lines.append(f"- {failure}")
-    if md5_info.get("all_five_match"):
-        lines.append("SqlToS3Operator MD5 matches the hand-written implementations.")
-    elif md5_info.get("ok"):
-        lines.append(
-            "SqlToS3Operator MD5 differs from the hand-written implementations. "
-            "It is included in the timings and is not part of the hard gate."
-        )
+    lines.extend(_md5_lines(md5_info))
     lines.append("")
-    lines.extend(
-        [
-            "| task | runtime | n | rows | task_s median (min–max) | task_s 95% CI | work_s median (min–max) | cpu_s median (min–max) | overhead_s median | MiB/s median | peak RSS MiB median |",
-            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
-        ]
-    )
-    ranked = sorted(
-        task_stats.items(),
-        key=lambda item: (item[1].get("task_s") or {}).get("median", math.inf),
-    )
-    for task_id, block in ranked:
-        task_s = block.get("task_s")
-        lines.append(
-            "| {task} | {runtime} | {n} | {rows} | {task_s} | {ci} | {work} | {cpu} | {overhead} | {mib} | {rss} |".format(
-                task=task_id,
-                runtime=block.get("runtime") or "",
-                n=block.get("n") or 0,
-                rows=f"{int(block['rows']):,}" if block.get("rows") is not None else "",
-                task_s=_spread(task_s),
-                ci=_ci(task_s),
-                work=_spread(block.get("work_s")),
-                cpu=_spread(block.get("cpu_s")),
-                overhead=_spread(block.get("overhead_s")),
-                mib=_spread(block.get("mib_per_s"), 1),
-                rss=_spread(block.get("peak_rss_mb"), 0),
-            )
-        )
+    lines.extend(_summary_table(task_stats))
     lines.extend(["", "## Environment", ""])
     for label, value in _environment_lines(meta):
         lines.append(f"- {label}: {value}")
@@ -526,122 +506,164 @@ def benchmark_payload(meta: dict, task_stats: dict) -> list[dict]:
     return points
 
 
-def discover_runs(root: Path) -> list[dict]:
-    runs = []
-    if not root.is_dir():
-        return runs
-    for env_path in sorted(root.glob("*/*/environment.json")):
-        try:
-            meta = json.loads(env_path.read_text())
-        except json.JSONDecodeError:
-            continue
-        stats_path = env_path.parent / "stats.json"
-        if stats_path.is_file():
-            try:
-                meta["stats"] = json.loads(stats_path.read_text())
-            except json.JSONDecodeError:
-                meta["stats"] = {}
-        else:
-            meta["stats"] = {}
-        meta["relpath"] = env_path.parent.relative_to(root).as_posix()
-        runs.append(meta)
-    return runs
+def published_entry(meta: dict, task_stats: dict) -> dict:
+    """The slice of a run that ``RESULTS.md`` stores and re-renders."""
+    sdk = meta.get("sdk") or {}
+    return {
+        "run_ids": list(meta.get("run_ids") or []),
+        "airflow_version": meta.get("airflow_version"),
+        "sdk": {
+            "go": sdk.get("go"),
+            "java": sdk.get("java"),
+            "typescript": sdk.get("typescript"),
+        },
+        "date": meta.get("date"),
+        "env_slug": meta.get("env_slug"),
+        "ci": bool(meta.get("ci")),
+        "cpu_model": meta.get("cpu_model"),
+        "cpu_limit": meta.get("cpu_limit"),
+        "mem_limit": meta.get("mem_limit"),
+        "rows": meta.get("rows"),
+        "fetch_size": meta.get("fetch_size"),
+        "part_size_mb": meta.get("part_size_mb"),
+        "git_sha": meta.get("git_sha"),
+        "git_dirty": bool(meta.get("git_dirty")),
+        "n": meta.get("n"),
+        "n_total": meta.get("n_total"),
+        "warmup_discarded": meta.get("warmup_discarded"),
+        "runtimes": meta.get("runtimes") or {},
+        "md5": meta.get("md5") or {},
+        "protocol_ok": bool(meta.get("protocol_ok")),
+        "warnings": list(meta.get("warnings") or []),
+        "tasks": task_stats,
+    }
 
 
-def render_index(runs: list[dict]) -> str:
-    lines = [
-        "# Published results",
-        "",
-        "Generated by `scripts/report.py`. Do not edit by hand. `make report`",
-        "rewrites this file, and `python3 scripts/report.py --index-only` rebuilds",
-        "it from the `environment.json` files already on disk.",
-        "",
-        "Each run is a directory `results/<airflow-version>/<YYYY-MM-DD>-<env-slug>/`:",
-        "",
-        "- `environment.json` — Airflow version, Go / Java / TypeScript SDK versions,",
-        "  Go / JDK / Node / CPython versions, CPU model, CPU and memory limits,",
-        "  rows, fetch_size, part_size, git SHA, and n",
-        "- `summary.md` — median, min, max, and a bootstrap 95% CI",
-        "- `stats.json` — those numbers, machine-readable",
-        "- `results.csv` — every task of every run, including the discarded warm-up",
-        "- `runs/<run_id>.json` and `runs/<run_id>.csv` — raw per-run records",
-        "- `benchmark.json` — `customSmallerIsBetter` payload (median `task_s`,",
-        "  `work_s`, and `cpu_s`). The GitHub Actions workflow is what publishes",
-        "  this file to the trend chart. Laptop runs stay in git only.",
-        "",
-        "The first triggered run is a warm-up. It stays in the raw files and is",
-        "excluded from the medians. `n` is the number of measured runs.",
-        "",
-        CI_NOISE_NOTE,
-        "",
-        "The Apple M4 sample in the repository README is not in this index.",
-        "Different `env` values are different machines. Do not read a column",
-        "across environments as a single trend.",
-        "",
-        "## Runs",
-        "",
-        "| airflow | date | env | rows | n | git | md5 | path |",
-        "|---|---|---|---:|---:|---|---|---|",
-    ]
-    if not runs:
-        lines.append("| | | | | | | | _No published runs yet._ |")
-    else:
-        for meta in runs:
-            git = str(meta.get("git_sha") or "")[:12]
-            md5 = meta.get("md5") or {}
-            if md5.get("ok"):
-                digest = str(md5.get("digest") or "")[:12]
-                md5_cell = f"pass {digest}"
-            else:
-                md5_cell = "fail"
-            rel = meta.get("relpath") or ""
-            lines.append(
-                "| {airflow} | {date} | {env} | {rows} | {n} | `{git}` | {md5} | [{path}]({path}/summary.md) |".format(
-                    airflow=meta.get("airflow_version") or "",
-                    date=meta.get("date") or "",
-                    env=meta.get("env_slug") or "",
-                    rows=meta.get("rows") if meta.get("rows") is not None else "",
-                    n=meta.get("n") if meta.get("n") is not None else "",
-                    git=git,
-                    md5=md5_cell,
-                    path=rel,
-                )
-            )
-    lines.extend(
-        [
-            "",
-            "## Trend by environment",
-            "",
-            "Task duration is the median `task_s` in seconds (smaller is better),",
-            "after one discarded warm-up. MiB/s is median throughput over `work_s`",
-            "(larger is better). SDK columns are go / java / typescript.",
-            "Only runs that followed the protocol are included: at least 5 triggered",
-            "runs, 1 warm-up discarded, the MD5 gate passed, and a clean git tree.",
-            "",
-        ]
+def upsert_entry(entries: list[dict], new: dict) -> list[dict]:
+    """Prepend ``new``. The same dag run ids replace the existing entry in place."""
+    key = list(new.get("run_ids") or [])
+    if not key:
+        raise ValueError("a published entry needs at least one run id")
+    for index, existing in enumerate(entries):
+        if list(existing.get("run_ids") or []) == key:
+            updated = list(entries)
+            updated[index] = new
+            return updated
+    return [new, *entries]
+
+
+def _sdk_cell(entry: dict) -> str:
+    sdk = entry.get("sdk") or {}
+    return " / ".join(str(sdk.get(name) or "") for name in ("go", "java", "typescript"))
+
+
+def _heading(entry: dict) -> str:
+    return (
+        f"## Airflow {entry.get('airflow_version')} · "
+        f"go/java/ts SDK {_sdk_cell(entry)} · "
+        f"{entry.get('date')} · {entry.get('env_slug')}"
     )
-    protocol = [meta for meta in runs if meta.get("protocol_ok")]
-    if not protocol:
-        lines.append("_No protocol runs yet._")
-        lines.append("")
-        return "\n".join(lines)
 
-    by_env: dict[str, list[dict]] = {}
-    for meta in protocol:
-        by_env.setdefault(str(meta.get("env_slug") or "unknown"), []).append(meta)
-    for env in sorted(by_env):
-        group = sorted(by_env[env], key=lambda m: (str(m.get("date") or ""), str(m.get("airflow_version") or "")))
-        lines.append(f"### `{env}`")
-        lines.append("")
-        if env == "github-actions":
-            lines.append(CI_NOISE_NOTE)
-            lines.append("")
-        lines.extend(_trend_table(group, "task_s", 2))
-        lines.append("")
-        lines.append("MiB/s median:")
-        lines.append("")
-        lines.extend(_trend_table(group, "mib_per_s", 1))
-        lines.append("")
+
+def _notes_line(entry: dict) -> str:
+    if _is_ci_entry(entry):
+        return CI_NOISE_NOTE
+    return (
+        f"Local run ({entry.get('cpu_model')}), scheduler cap {entry.get('cpu_limit')} CPU / "
+        f"{entry.get('mem_limit')}, {entry.get('rows')} rows. Not a GitHub-hosted runner and not "
+        "comparable with the Apple M4 sample."
+    )
+
+
+def _md5_lines(md5_info: dict) -> list[str]:
+    if md5_info.get("ok"):
+        lines = [f"Byte-identical MD5 gate: pass (`{md5_info.get('digest')}`)."]
+    else:
+        lines = ["Byte-identical MD5 gate: FAIL."]
+        for failure in md5_info.get("failures") or []:
+            lines.append(f"- {failure}")
+    if md5_info.get("all_five_match"):
+        lines.append("SqlToS3Operator MD5 matches the hand-written implementations.")
+    elif md5_info.get("ok"):
+        lines.append(
+            "SqlToS3Operator MD5 differs from the hand-written implementations. "
+            "It is included in the timings and is not part of the hard gate."
+        )
+    return lines
+
+
+def _summary_table(task_stats: dict) -> list[str]:
+    lines = [
+        "| task | runtime | n | rows | task_s median (min–max) | task_s 95% CI | work_s median (min–max) | cpu_s median (min–max) | overhead_s median | MiB/s median | peak RSS MiB median |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    ranked = sorted(
+        task_stats.items(),
+        key=lambda item: (item[1].get("task_s") or {}).get("median", math.inf),
+    )
+    for task_id, block in ranked:
+        task_s = block.get("task_s")
+        lines.append(
+            "| {task} | {runtime} | {n} | {rows} | {task_s} | {ci} | {work} | {cpu} | {overhead} | {mib} | {rss} |".format(
+                task=task_id,
+                runtime=block.get("runtime") or "",
+                n=block.get("n") or 0,
+                rows=f"{int(block['rows']):,}" if block.get("rows") is not None else "",
+                task_s=_spread(task_s),
+                ci=_ci(task_s),
+                work=_spread(block.get("work_s")),
+                cpu=_spread(block.get("cpu_s")),
+                overhead=_spread(block.get("overhead_s")),
+                mib=_spread(block.get("mib_per_s"), 1),
+                rss=_spread(block.get("peak_rss_mb"), 0),
+            )
+        )
+    return lines
+
+
+def _environment_compact(entry: dict) -> str:
+    runtimes = entry.get("runtimes") or {}
+    sdk = entry.get("sdk") or {}
+    git = str(entry.get("git_sha") or "unknown")
+    if entry.get("git_dirty"):
+        git = f"{git} (dirty tree)"
+    part = entry.get("part_size_mb")
+    part_text = f"{part} MiB" if part is not None else "unknown"
+    return (
+        f"Airflow {entry.get('airflow_version')}; "
+        f"SDK go {sdk.get('go')}, java {sdk.get('java')}, typescript {sdk.get('typescript')}; "
+        f"Go {runtimes.get('go')}; JDK {runtimes.get('jdk')}; Node {runtimes.get('node')}; "
+        f"CPython {runtimes.get('cpython')}; CPU {entry.get('cpu_model')}; "
+        f"limit {entry.get('cpu_limit')} CPU / {entry.get('mem_limit')}; "
+        f"rows {entry.get('rows')}; fetch_size {entry.get('fetch_size')}; part_size {part_text}; "
+        f"git `{git}`; env `{entry.get('env_slug')}`; ci {str(bool(entry.get('ci')))}."
+    )
+
+
+def render_entry(entry: dict) -> str:
+    """One changelog section. The HTML comment is the idempotency key and the trend source."""
+    blob = json.dumps(entry, sort_keys=True, separators=(",", ":"))
+    lines = [
+        _heading(entry),
+        "",
+        f"<!-- bench-entry {blob} -->",
+        "",
+        (
+            f"n={entry.get('n')} measured, {entry.get('n_total')} triggered, "
+            f"{entry.get('warmup_discarded')} warm-up discarded."
+        ),
+        "",
+        *_md5_lines(entry.get("md5") or {}),
+        "",
+        *_summary_table(entry.get("tasks") or {}),
+        "",
+        f"Environment: {_environment_compact(entry)}",
+        "",
+        f"Notes: {_notes_line(entry)}",
+    ]
+    warnings = entry.get("warnings") or []
+    if warnings:
+        lines.extend(["", "Warnings: " + "; ".join(str(item) for item in warnings) + "."])
     return "\n".join(lines)
 
 
@@ -651,25 +673,91 @@ def _trend_table(group: list[dict], metric: str, digits: int) -> list[str]:
     ) + " |"
     sep = "|---|---|---|---:|---:|" + "|".join("---:" for _ in TREND_TASKS) + "|"
     rows = [header, sep]
-    for meta in group:
-        sdk = meta.get("sdk") or {}
-        sdk_cell = " / ".join(str(sdk.get(name) or "") for name in ("go", "java", "typescript"))
-        stats = (meta.get("stats") or {}).get("tasks") or {}
+    for entry in group:
         cells = []
+        tasks = entry.get("tasks") or {}
         for task in TREND_TASKS:
-            block = (stats.get(task) or {}).get(metric)
+            block = (tasks.get(task) or {}).get(metric)
             cells.append(_fmt(block.get("median"), digits) if block else "")
         rows.append(
             "| {airflow} | {sdk} | {date} | {nrows} | {n} | {cells} |".format(
-                airflow=meta.get("airflow_version") or "",
-                sdk=sdk_cell,
-                date=meta.get("date") or "",
-                nrows=meta.get("rows") if meta.get("rows") is not None else "",
-                n=meta.get("n") if meta.get("n") is not None else "",
+                airflow=entry.get("airflow_version") or "",
+                sdk=_sdk_cell(entry),
+                date=entry.get("date") or "",
+                nrows=entry.get("rows") if entry.get("rows") is not None else "",
+                n=entry.get("n") if entry.get("n") is not None else "",
                 cells=" | ".join(cells),
             )
         )
     return rows
+
+
+def render_results(entries: list[dict]) -> str:
+    """``RESULTS.md``: trend table, then one section per run, newest first."""
+    lines = [
+        "# Results",
+        "",
+        "Changelog of published transfer-bench runs. Newest entry first.",
+        "`make report` prepends an entry. Each entry carries an HTML comment with",
+        "its Airflow dag run ids; the same ids replace that entry instead of",
+        "adding a second one. Do not edit this file by hand.",
+        "",
+        "Raw per-run CSV, JSON, logs, and the per-run `summary.md` stay in",
+        "`results/` on the machine that ran the bench. They are gitignored.",
+        "The GitHub Actions workflow commits only this file. It generates",
+        "`benchmark.json` for the trend chart and pushes that chart to",
+        "`gh-pages`, not to this branch.",
+        "",
+        "The Apple M4 sample in the README is Aldo's local run. It is not an",
+        "entry below. Different environments are different machines. Do not",
+        "read the trend table across environments as one series.",
+        "",
+        CI_NOISE_NOTE,
+        "",
+        "## Trend",
+        "",
+        "Median `task_s` (seconds, smaller is better) and peak RSS (MiB), per",
+        "release, after one discarded warm-up. SDK columns are go / java /",
+        "typescript. Only runs that followed the protocol are included: at least",
+        "5 triggered runs, 1 warm-up discarded, the MD5 gate passed, and a clean",
+        "git tree.",
+        "",
+    ]
+    protocol = [entry for entry in entries if entry.get("protocol_ok")]
+    if not protocol:
+        lines.append("_No protocol runs yet._")
+        lines.append("")
+    else:
+        by_env: dict[str, list[dict]] = {}
+        for entry in protocol:
+            by_env.setdefault(str(entry.get("env_slug") or "unknown"), []).append(entry)
+        for env in sorted(by_env):
+            group = sorted(
+                by_env[env],
+                key=lambda item: (str(item.get("date") or ""), str(item.get("airflow_version") or "")),
+                reverse=True,
+            )
+            lines.append(f"### `{env}`")
+            lines.append("")
+            if env == "github-actions":
+                lines.append(CI_NOISE_NOTE)
+                lines.append("")
+            lines.append("task_s median:")
+            lines.append("")
+            lines.extend(_trend_table(group, "task_s", 2))
+            lines.append("")
+            lines.append("peak RSS MiB median:")
+            lines.append("")
+            lines.extend(_trend_table(group, "peak_rss_mb", 0))
+            lines.append("")
+    if not entries:
+        lines.append("_No published runs yet._")
+        lines.append("")
+    else:
+        for entry in entries:
+            lines.append(render_entry(entry))
+            lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def write_text_atomic(path: Path, text: str) -> None:
@@ -685,7 +773,28 @@ def write_text_atomic(path: Path, text: str) -> None:
     os.replace(temporary, path)
 
 
-def write_index(root: Path) -> str:
-    text = render_index(discover_runs(root))
-    write_text_atomic(root / "README.md", text)
+def write_text_shared(path: Path, text: str) -> None:
+    """Write ``RESULTS.md``.
+
+    A bind-mounted file cannot be replaced via a sibling temp file. Fall back
+    to truncating the mounted file when the directory is not writable.
+    """
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(text)
+        os.replace(temporary, path)
+    except OSError:
+        if temporary.exists():
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+        with path.open("w", encoding="utf-8") as handle:
+            handle.write(text)
+
+
+def write_results(path: Path, entries: list[dict]) -> str:
+    text = render_results(entries)
+    write_text_shared(path, text)
     return text

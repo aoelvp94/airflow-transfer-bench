@@ -3,7 +3,7 @@
 # workflow_dispatch builds the requested Airflow + Task SDK versions (defaults
 # 3.4.0 and 1.0.0), seeds a small table, and runs the bench.
 # The weekly schedule checks PyPI. It runs only when the newest stable
-# apache-airflow (>= 3.4.0) has no github-actions run under results/ yet.
+# apache-airflow (>= 3.4.0) has no github-actions entry in RESULTS.md yet.
 # A laptop run of that version does not count.
 #
 # GitHub-hosted runners are noisy. The numbers this workflow commits are for
@@ -83,7 +83,7 @@ jobs:
           RUNS: ${{ github.event.inputs.runs }}
         run: |
           set -euo pipefail
-          args=(python3 scripts/resolve_bench_target.py --mode "$MODE" --results results)
+          args=(python3 scripts/resolve_bench_target.py --mode "$MODE" --results-md RESULTS.md)
           [[ -n "${AIRFLOW_VERSION:-}" ]] && args+=(--airflow-version "$AIRFLOW_VERSION")
           [[ -n "${GO_SDK_VERSION:-}" ]] && args+=(--go-sdk-version "$GO_SDK_VERSION")
           [[ -n "${JAVA_SDK_VERSION:-}" ]] && args+=(--java-sdk-version "$JAVA_SDK_VERSION")
@@ -175,10 +175,16 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add results
+          git add -- RESULTS.md
           if git diff --cached --quiet; then
-            echo "report wrote nothing new"
+            echo "RESULTS.md unchanged"
             exit 0
+          fi
+          staged=$(git diff --cached --name-only)
+          if [ "$staged" != "RESULTS.md" ]; then
+            echo "The results PR must only touch RESULTS.md. Staged:" >&2
+            printf '%s\n' "$staged" >&2
+            exit 1
           fi
           branch="benchmark/airflow-${AIRFLOW_VERSION}-$(date -u +%Y%m%d)"
           if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
@@ -190,7 +196,7 @@ jobs:
           cat > /tmp/pr-body.md <<EOF
           ## Airflow ${AIRFLOW_VERSION} on a GitHub-hosted runner
 
-          Published run: \`${RUN_DIR}\`
+          Published record: \`RESULTS.md\` (one new or replaced changelog entry). Raw CSV/JSON stays on the runner and is not committed.
 
           GitHub-hosted runners are noisy. These numbers track trends and regressions. They are not absolute speed and are not comparable with the Apple M4 sample in the README, or with a run from any other machine.
 
@@ -201,7 +207,7 @@ jobs:
           - rows \`${ROWS}\`
           - runs \`${RUNS}\` (the first is a discarded warm-up)
 
-          The following step publishes \`benchmark.json\` (\`customSmallerIsBetter\`: median task_s, work_s, cpu_s) through benchmark-action/github-action-benchmark onto \`gh-pages\`. That chart is fed only by this workflow.
+          The following step publishes \`benchmark.json\` (\`customSmallerIsBetter\`: median task_s, work_s, cpu_s) through benchmark-action/github-action-benchmark onto \`gh-pages\` only. That chart is fed only by this workflow. \`benchmark.json\` is not committed to \`main\`.
           EOF
           gh pr create --base main --head "$branch" \
             --title "Benchmark Airflow ${AIRFLOW_VERSION} (GitHub-hosted runner)" \

@@ -32,14 +32,24 @@ class ResolveTest(unittest.TestCase):
 
     def test_schedule_runs_when_only_a_laptop_result_exists(self):
         import tempfile
+        from report_lib import write_results
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            run = root / "3.4.0" / "2026-11-19-apple-m4"
-            run.mkdir(parents=True)
-            (run / "environment.json").write_text(json.dumps({"ci": False, "env_slug": "apple-m4"}))
+            path = Path(tmp) / "RESULTS.md"
+            write_results(path, [{
+                "run_ids": ["local"],
+                "airflow_version": "3.4.0",
+                "ci": False,
+                "env_slug": "apple-m4",
+                "date": "2026-11-19",
+                "sdk": {},
+                "n": 4, "n_total": 5, "warmup_discarded": 1,
+                "protocol_ok": True,
+                "md5": {"ok": True, "digest": "abc"},
+                "tasks": {},
+            }])
             decision = decide(
                 mode="schedule",
-                results=root,
+                results_md=path,
                 airflow_version="3.4.0",
                 go_sdk_version="1.0.0",
                 java_sdk_version="1.0.0",
@@ -56,14 +66,24 @@ class ResolveTest(unittest.TestCase):
 
     def test_schedule_skips_when_a_ci_run_exists(self):
         import tempfile
+        from report_lib import write_results
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            run = root / "3.4.0" / "2026-11-19-github-actions"
-            run.mkdir(parents=True)
-            (run / "environment.json").write_text(json.dumps({"ci": True, "env_slug": "github-actions"}))
+            path = Path(tmp) / "RESULTS.md"
+            write_results(path, [{
+                "run_ids": ["ci"],
+                "airflow_version": "3.4.0",
+                "ci": True,
+                "env_slug": "github-actions",
+                "date": "2026-11-19",
+                "sdk": {},
+                "n": 4, "n_total": 5, "warmup_discarded": 1,
+                "protocol_ok": True,
+                "md5": {"ok": True, "digest": "abc"},
+                "tasks": {},
+            }])
             decision = decide(
                 mode="schedule",
-                results=root,
+                results_md=path,
                 airflow_version="9.9.9",
                 go_sdk_version="1.0.0",
                 java_sdk_version="1.0.0",
@@ -80,7 +100,7 @@ class ResolveTest(unittest.TestCase):
     def test_dispatch_uses_the_requested_version(self):
         decision = decide(
             mode="workflow_dispatch",
-            results=Path("."),
+            results_md=Path("RESULTS.md"),
             airflow_version="3.4.0",
             go_sdk_version="1.2.0",
             java_sdk_version="1.0.0",
@@ -99,7 +119,7 @@ class ResolveTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             decide(
                 mode="workflow_dispatch",
-                results=Path("."),
+                results_md=Path("RESULTS.md"),
                 airflow_version="3.4.0",
                 go_sdk_version="1.0.0",
                 java_sdk_version="1.0.0",
@@ -139,7 +159,26 @@ class RepoContractTest(unittest.TestCase):
         self.assertIn("customSmallerIsBetter", text)
         self.assertIn("benchmark-action/github-action-benchmark", text)
         self.assertIn("comment-on-alert: false", text)
+        self.assertIn("git add -- RESULTS.md", text)
+        self.assertIn("gh-pages", text)
+        self.assertNotIn("git add results", text)
         self.assertIn("apache-airflow", (ROOT / "scripts/resolve_bench_target.py").read_text())
+        readme = (ROOT / "README.md").read_text()
+        self.assertIn("RESULTS.md", readme)
+        self.assertNotIn("results/README.md", readme)
+        published = (ROOT / "RESULTS.md").read_text()
+        self.assertIn(
+            "| transfer_go | go1.25.14 | 4 | 200,000 | 0.42 (0.41–0.56) | 0.41–0.56 | 0.38 (0.36–0.50) | 0.14 (0.14–0.17) | 0.05 (0.05–0.05) | 73.9 (55.5–76.4) | 165 (160–168) |",
+            published,
+        )
+        self.assertIn(
+            "| 3.4.0 | 1.0.0 / 1.0.0 / 1.0.0 | 2026-11-19 | 200000 | 4 | 0.42 | 1.23 | 0.81 | 1.32 | 2.10 |",
+            published,
+        )
+        self.assertIn(
+            "| 3.4.0 | 1.0.0 / 1.0.0 / 1.0.0 | 2026-11-19 | 200000 | 4 | 165 | 216 | 163 | 237 | 490 |",
+            published,
+        )
 
 
 if __name__ == "__main__":

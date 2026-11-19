@@ -40,8 +40,8 @@ help:
 	@echo "    JAVA_SDK_VERSION=$(JAVA_SDK_VERSION) TS_SDK_VERSION=$(TS_SDK_VERSION)"
 	@echo "make seed ROWS=N                (re)create bench.events (default $(ROWS))"
 	@echo "make bench RUNS=N               trigger N runs and wait (default $(RUNS); first is warm-up)"
-	@echo "make report                     write results/<airflow>/<date>-<env>/ and refresh results/README.md"
-	@echo "make index                      rebuild results/README.md from committed runs"
+	@echo "make report                     write gitignored results/ and prepend RESULTS.md"
+	@echo "make index                      re-render RESULTS.md from the entries already in it"
 	@echo "make all                        up + seed + bench + report"
 	@echo "make down / clean               stop / stop and delete volumes"
 	@echo "BENCH_CPUS=$(BENCH_CPUS) BENCH_MEM=$(BENCH_MEM)   scheduler container limits"
@@ -59,6 +59,7 @@ bench:
 	$(EXEC) airflow-scheduler bash /opt/airflow/scripts/run_bench.sh $(RUNS)
 
 report:
+	chmod a+rw RESULTS.md
 	$(EXEC) $(REPORT_ENV) airflow-scheduler python /opt/airflow/scripts/report.py
 
 index:

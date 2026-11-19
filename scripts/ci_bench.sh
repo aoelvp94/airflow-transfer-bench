@@ -42,7 +42,9 @@ PY
 
 mkdir -p results
 # The scheduler writes this tree as uid 50000 unless AIRFLOW_UID is the runner.
+# RESULTS.md is a file mount; it has to be writable by that user too.
 chmod -R a+rwX results
+chmod a+rw RESULTS.md
 
 echo "GitHub-hosted runners are noisy. This run tracks trends, not absolute speed."
 make up

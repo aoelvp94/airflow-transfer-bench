@@ -6,10 +6,10 @@ the requested SDK versions (default 1.0.0).
 
 ``schedule`` looks up the newest stable apache-airflow on PyPI that is at
 least 3.4.0 (the first release this bench tracks). It runs only when
-``results/<version>/`` has no GitHub-hosted run yet. A laptop run of that
-version does not suppress the CI run. SDK versions stay at the workflow
-defaults; the JSON also reports the newest SDK versions it could see, so a
-person can dispatch those explicitly.
+``RESULTS.md`` has no GitHub-hosted entry for that version yet. A laptop
+entry for that version does not suppress the CI run. SDK versions stay at
+the workflow defaults; the JSON also reports the newest SDK versions it
+could see, so a person can dispatch those explicitly.
 
 Prints one JSON object on stdout. Progress goes to stderr.
 """
@@ -93,7 +93,7 @@ def check_version(name: str, value: str) -> str:
 def decide(
     *,
     mode: str,
-    results: Path,
+    results_md: Path,
     airflow_version: str,
     go_sdk_version: str,
     java_sdk_version: str,
@@ -126,12 +126,12 @@ def decide(
         if pypi_latest is None:
             raise SystemExit(f"no stable apache-airflow >={minimum} on PyPI")
         version = pypi_latest
-        if has_ci_run(results, version):
+        if has_ci_run(results_md, version):
             should_run = False
-            reason = f"results/{version}/ already has a github-actions run"
+            reason = f"RESULTS.md already has a github-actions entry for Airflow {version}"
         else:
             should_run = True
-            reason = f"no github-actions run for Airflow {version}"
+            reason = f"no github-actions entry for Airflow {version}"
     elif mode == "workflow_dispatch":
         version = check_version("airflow_version", airflow_version)
         should_run = True
@@ -158,7 +158,7 @@ def decide(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", required=True, choices=("schedule", "workflow_dispatch"))
-    parser.add_argument("--results", type=Path, default=Path("results"))
+    parser.add_argument("--results-md", type=Path, default=Path("RESULTS.md"))
     parser.add_argument("--airflow-version", default=DEFAULTS["airflow_version"])
     parser.add_argument("--go-sdk-version", default=DEFAULTS["go_sdk_version"])
     parser.add_argument("--java-sdk-version", default=DEFAULTS["java_sdk_version"])
@@ -182,7 +182,7 @@ def main() -> None:
         print(f"latest {name} sdk: {version or 'unknown'}", file=sys.stderr)
     decision = decide(
         mode=args.mode,
-        results=args.results,
+        results_md=args.results_md,
         airflow_version=args.airflow_version,
         go_sdk_version=args.go_sdk_version,
         java_sdk_version=args.java_sdk_version,

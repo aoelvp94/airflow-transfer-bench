@@ -22,16 +22,18 @@ from report_lib import (  # noqa: E402
     evaluate_md5,
     has_ci_run,
     human_bytes,
+    load_entries,
     parse_cpu_max,
     parse_cpu_model,
     parse_java_version,
     parse_mem_max,
     parse_node_version,
-    render_index,
+    render_results,
     split_warmup,
     stat_block,
     summarize_tasks,
-    write_index,
+    upsert_entry,
+    write_results,
 )
 
 
@@ -134,37 +136,81 @@ class LayoutTest(unittest.TestCase):
             self.assertNotEqual(other, first)
             self.assertTrue(other.name.endswith("-2"))
 
-    def test_empty_index_does_not_invent_the_m4_sample(self):
-        text = render_index([])
+    def test_empty_changelog_does_not_invent_the_m4_sample(self):
+        text = render_results([])
         self.assertIn("No published runs yet", text)
         self.assertNotIn("2.51", text)
         self.assertNotIn("61.6", text)
         self.assertIn("GitHub-hosted runners are noisy", text)
+        self.assertIn("peak RSS", text)
 
-    def test_index_trend_is_per_environment(self):
-        def run(env, airflow, task_s, ci=False):
+    def test_trend_is_per_environment(self):
+        def run(env, airflow, task_s, rss, ci=False, run_id="r"):
             return {
+                "run_ids": [f"{env}-{run_id}"],
                 "airflow_version": airflow,
                 "date": "2026-11-19",
                 "env_slug": env,
                 "rows": 200000,
                 "n": 4,
+                "n_total": 5,
+                "warmup_discarded": 1,
                 "git_sha": "abc123def456",
                 "protocol_ok": True,
                 "ci": ci,
                 "sdk": {"go": "1.0.0", "java": "1.0.0", "typescript": "1.0.0"},
                 "md5": {"ok": True, "digest": "deadbeef"},
-                "relpath": f"{airflow}/2026-11-19-{env}",
-                "stats": {"tasks": {"transfer_go": {"task_s": {"median": task_s}, "mib_per_s": {"median": 10.0}}}},
+                "tasks": {"transfer_go": {
+                    "task_s": {"median": task_s, "min": task_s, "max": task_s, "ci95": [task_s, task_s]},
+                    "peak_rss_mb": {"median": rss, "min": rss, "max": rss},
+                    "runtime": "go",
+                    "n": 4,
+                    "rows": 200000,
+                }},
             }
-        text = render_index([
-            run("github-actions", "3.4.0", 9.0, ci=True),
-            run("apple-m4", "3.4.0", 2.5),
+        text = render_results([
+            run("github-actions", "3.4.0", 9.0, 400, ci=True),
+            run("apple-m4", "3.4.0", 2.5, 161),
         ])
         self.assertIn("### `github-actions`", text)
         self.assertIn("### `apple-m4`", text)
         self.assertIn("9.00", text)
         self.assertIn("2.50", text)
+        self.assertIn("400", text)
+        self.assertLess(text.index("## Airflow 3.4.0 · go/java/ts SDK 1.0.0 / 1.0.0 / 1.0.0 · 2026-11-19 · github-actions"),
+                        text.index("## Airflow 3.4.0 · go/java/ts SDK 1.0.0 / 1.0.0 / 1.0.0 · 2026-11-19 · apple-m4"))
+
+    def test_same_run_ids_replace_the_entry(self):
+        first = {
+            "run_ids": ["a", "b"],
+            "airflow_version": "3.4.0",
+            "date": "2026-11-19",
+            "env_slug": "lab",
+            "sdk": {"go": "1.0.0", "java": "1.0.0", "typescript": "1.0.0"},
+            "n": 4, "n_total": 5, "warmup_discarded": 1,
+            "protocol_ok": True, "ci": False,
+            "md5": {"ok": True, "digest": "abc"},
+            "tasks": {"transfer_go": {"task_s": {"median": 1.0, "min": 1.0, "max": 1.0}, "runtime": "go", "n": 4, "rows": 10}},
+        }
+        newer = {
+            "run_ids": ["c"],
+            "airflow_version": "3.4.1",
+            "date": "2026-11-20",
+            "env_slug": "lab",
+            "sdk": {"go": "1.0.0", "java": "1.0.0", "typescript": "1.0.0"},
+            "n": 4, "n_total": 5, "warmup_discarded": 1,
+            "protocol_ok": True, "ci": False,
+            "md5": {"ok": True, "digest": "def"},
+            "tasks": {},
+        }
+        replaced = dict(first)
+        replaced["rows"] = 200000
+        entries = upsert_entry(upsert_entry([first], newer), replaced)
+        self.assertEqual([item["run_ids"] for item in entries], [["c"], ["a", "b"]])
+        self.assertEqual(entries[1]["rows"], 200000)
+        text = render_results(entries)
+        self.assertEqual(text.count("## Airflow"), 2)
+        self.assertEqual(len(load_entries(text)), 2)
 
     def test_benchmark_payload_is_smaller_is_better_shape(self):
         meta = {
@@ -182,29 +228,41 @@ class LayoutTest(unittest.TestCase):
         self.assertIsInstance(points[0]["value"], float)
         self.assertIn("noisy", points[0]["extra"])
 
-    def test_write_index_round_trip(self):
+    def test_write_results_round_trip(self):
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            text = write_index(root)
-            self.assertTrue((root / "README.md").is_file())
+            path = Path(tmp) / "RESULTS.md"
+            text = write_results(path, [])
+            self.assertTrue(path.is_file())
             self.assertIn("No published runs yet", text)
-            self.assertIn("environment.json", text)
+            self.assertEqual(load_entries(path.read_text()), [])
 
 
 class CiRunDetectionTest(unittest.TestCase):
     def test_a_laptop_run_does_not_count_as_ci(self):
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            run = root / "3.4.0" / "2026-11-19-apple-m4"
-            run.mkdir(parents=True)
-            (run / "environment.json").write_text(json.dumps({"ci": False, "env_slug": "apple-m4"}))
-            self.assertFalse(has_ci_run(root, "3.4.0"))
-            ci = root / "3.4.0" / "2026-11-20-github-actions"
-            ci.mkdir()
-            (ci / "environment.json").write_text(json.dumps({"ci": True, "env_slug": "github-actions"}))
-            self.assertTrue(has_ci_run(root, "3.4.0"))
+            path = Path(tmp) / "RESULTS.md"
+            laptop = {
+                "run_ids": ["local"],
+                "airflow_version": "3.4.0",
+                "ci": False,
+                "env_slug": "apple-m4",
+                "protocol_ok": True,
+                "date": "2026-11-19",
+                "sdk": {},
+                "n": 4, "n_total": 5, "warmup_discarded": 1,
+                "md5": {"ok": True, "digest": "abc"},
+                "tasks": {},
+            }
+            write_results(path, [laptop])
+            self.assertFalse(has_ci_run(path, "3.4.0"))
+            ci = dict(laptop)
+            ci["run_ids"] = ["ci"]
+            ci["ci"] = True
+            ci["env_slug"] = "github-actions"
+            write_results(path, upsert_entry(load_entries(path.read_text()), ci))
+            self.assertTrue(has_ci_run(path, "3.4.0"))
 
 
 if __name__ == "__main__":
