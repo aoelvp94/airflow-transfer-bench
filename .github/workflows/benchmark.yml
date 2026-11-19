@@ -1,0 +1,224 @@
+# Track this bench across Airflow releases.
+#
+# workflow_dispatch builds the requested Airflow + Task SDK versions (defaults
+# 3.4.0 and 1.0.0), seeds a small table, and runs the bench.
+# The weekly schedule checks PyPI. It runs only when the newest stable
+# apache-airflow (>= 3.4.0) has no github-actions run under results/ yet.
+# A laptop run of that version does not count.
+#
+# GitHub-hosted runners are noisy. The numbers this workflow commits are for
+# trends and regressions. They are not absolute speed and are not comparable
+# with the Apple M4 sample in the README.
+#
+# The workflow does not change repository settings. Before the chart step can
+# push, and before the results PR can open, a maintainer needs:
+#   - Actions workflow permissions: read and write
+#   - "Allow GitHub Actions to create and approve pull requests"
+#   - a gh-pages branch Pages can publish (the benchmark action pushes it)
+# See README, "Tracking across releases".
+
+name: transfer-bench
+
+on:
+  workflow_dispatch:
+    inputs:
+      airflow_version:
+        description: "apache-airflow version (image apache/airflow:<version>-python3.12)"
+        required: false
+        default: "3.4.0"
+      go_sdk_version:
+        description: "Go Task SDK module version"
+        required: false
+        default: "1.0.0"
+      java_sdk_version:
+        description: "Java Task SDK version"
+        required: false
+        default: "1.0.0"
+      ts_sdk_version:
+        description: "TypeScript Task SDK version"
+        required: false
+        default: "1.0.0"
+      supervisor_schema_version:
+        description: "Java bundle Airflow-Supervisor-Schema-Version (YYYY-MM-DD)"
+        required: false
+        default: "2026-10-30"
+      rows:
+        description: "Rows in bench.events (kept small; runners are not a speed lab)"
+        required: false
+        default: "200000"
+      runs:
+        description: "Triggered runs. The first is a discarded warm-up. Minimum 5."
+        required: false
+        default: "5"
+  schedule:
+    # Weekly PyPI check for a new stable apache-airflow. Monday 06:17 UTC.
+    - cron: "17 6 * * 1"
+
+concurrency:
+  group: transfer-bench
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve Airflow version
+        id: target
+        env:
+          MODE: ${{ github.event_name }}
+          AIRFLOW_VERSION: ${{ github.event.inputs.airflow_version }}
+          GO_SDK_VERSION: ${{ github.event.inputs.go_sdk_version }}
+          JAVA_SDK_VERSION: ${{ github.event.inputs.java_sdk_version }}
+          TS_SDK_VERSION: ${{ github.event.inputs.ts_sdk_version }}
+          SUPERVISOR_SCHEMA_VERSION: ${{ github.event.inputs.supervisor_schema_version }}
+          ROWS: ${{ github.event.inputs.rows }}
+          RUNS: ${{ github.event.inputs.runs }}
+        run: |
+          set -euo pipefail
+          args=(python3 scripts/resolve_bench_target.py --mode "$MODE" --results results)
+          [[ -n "${AIRFLOW_VERSION:-}" ]] && args+=(--airflow-version "$AIRFLOW_VERSION")
+          [[ -n "${GO_SDK_VERSION:-}" ]] && args+=(--go-sdk-version "$GO_SDK_VERSION")
+          [[ -n "${JAVA_SDK_VERSION:-}" ]] && args+=(--java-sdk-version "$JAVA_SDK_VERSION")
+          [[ -n "${TS_SDK_VERSION:-}" ]] && args+=(--ts-sdk-version "$TS_SDK_VERSION")
+          [[ -n "${SUPERVISOR_SCHEMA_VERSION:-}" ]] && args+=(--supervisor-schema-version "$SUPERVISOR_SCHEMA_VERSION")
+          [[ -n "${ROWS:-}" ]] && args+=(--rows "$ROWS")
+          [[ -n "${RUNS:-}" ]] && args+=(--runs "$RUNS")
+          "${args[@]}" | tee "$RUNNER_TEMP/target.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          target = json.loads(Path(os.environ["RUNNER_TEMP"], "target.json").read_text())
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              for key in (
+                  "should_run", "airflow_version", "go_sdk_version", "java_sdk_version",
+                  "ts_sdk_version", "rows", "runs", "supervisor_schema_version", "reason",
+              ):
+                  value = target[key]
+                  if isinstance(value, bool):
+                      value = "true" if value else "false"
+                  fh.write(f"{key}={value}\n")
+          sdks = target.get("latest_sdks") or {}
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text(
+              "\n".join([
+                  "### Transfer bench target",
+                  "",
+                  f"- Run: {'yes' if target['should_run'] else 'no'} ({target['reason']})",
+                  f"- Airflow: `{target['airflow_version']}` (PyPI latest stable: `{target.get('pypi_latest')}`)",
+                  (
+                      "- SDKs for this run: "
+                      f"go `{target['go_sdk_version']}`, java `{target['java_sdk_version']}`, "
+                      f"typescript `{target['ts_sdk_version']}`"
+                  ),
+                  (
+                      "- Newest SDKs visible (not auto-selected): "
+                      f"go `{sdks.get('go')}`, java `{sdks.get('java')}`, typescript `{sdks.get('typescript')}`"
+                  ),
+                  f"- Rows: {target['rows']}",
+                  f"- Runs: {target['runs']} (the first is a discarded warm-up)",
+                  "",
+                  "GitHub-hosted runners are noisy. These numbers track trends and regressions. "
+                  "They are not absolute speed and are not comparable with the Apple M4 sample in the README.",
+                  "",
+              ])
+          )
+          PY
+
+      - name: Free runner disk
+        if: steps.target.outputs.should_run == 'true'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          docker system prune -af || true
+
+      - name: Build, seed, and bench
+        id: bench
+        if: steps.target.outputs.should_run == 'true'
+        env:
+          AIRFLOW_VERSION: ${{ steps.target.outputs.airflow_version }}
+          GO_SDK_VERSION: ${{ steps.target.outputs.go_sdk_version }}
+          JAVA_SDK_VERSION: ${{ steps.target.outputs.java_sdk_version }}
+          TS_SDK_VERSION: ${{ steps.target.outputs.ts_sdk_version }}
+          SUPERVISOR_SCHEMA_VERSION: ${{ steps.target.outputs.supervisor_schema_version }}
+          ROWS: ${{ steps.target.outputs.rows }}
+          RUNS: ${{ steps.target.outputs.runs }}
+          BENCH_ENV_SLUG: github-actions
+          BENCH_CI: "true"
+          BENCH_CPUS: "2"
+          BENCH_MEM: 3g
+        run: |
+          set -euo pipefail
+          ./scripts/ci_bench.sh | tee /tmp/bench.txt
+          dir=$(grep -E '^BENCH_RUN_DIR=' /tmp/bench.txt | tail -1 | cut -d= -f2-)
+          test -n "$dir"
+          test -f "$dir/benchmark.json"
+          echo "run_dir=$dir" >> "$GITHUB_OUTPUT"
+
+      - name: Open a pull request with the results
+        if: steps.target.outputs.should_run == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AIRFLOW_VERSION: ${{ steps.target.outputs.airflow_version }}
+          RUN_DIR: ${{ steps.bench.outputs.run_dir }}
+          GO_SDK_VERSION: ${{ steps.target.outputs.go_sdk_version }}
+          JAVA_SDK_VERSION: ${{ steps.target.outputs.java_sdk_version }}
+          TS_SDK_VERSION: ${{ steps.target.outputs.ts_sdk_version }}
+          ROWS: ${{ steps.target.outputs.rows }}
+          RUNS: ${{ steps.target.outputs.runs }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add results
+          if git diff --cached --quiet; then
+            echo "report wrote nothing new"
+            exit 0
+          fi
+          branch="benchmark/airflow-${AIRFLOW_VERSION}-$(date -u +%Y%m%d)"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            branch="${branch}-$(date -u +%H%M%S)"
+          fi
+          git checkout -b "$branch"
+          git commit -m "Add Airflow ${AIRFLOW_VERSION} transfer bench results (GitHub-hosted runner)"
+          git push -u origin "$branch"
+          cat > /tmp/pr-body.md <<EOF
+          ## Airflow ${AIRFLOW_VERSION} on a GitHub-hosted runner
+
+          Published run: \`${RUN_DIR}\`
+
+          GitHub-hosted runners are noisy. These numbers track trends and regressions. They are not absolute speed and are not comparable with the Apple M4 sample in the README, or with a run from any other machine.
+
+          - Airflow \`${AIRFLOW_VERSION}\`
+          - Go SDK \`${GO_SDK_VERSION}\`
+          - Java SDK \`${JAVA_SDK_VERSION}\`
+          - TypeScript SDK \`${TS_SDK_VERSION}\`
+          - rows \`${ROWS}\`
+          - runs \`${RUNS}\` (the first is a discarded warm-up)
+
+          The following step publishes \`benchmark.json\` (\`customSmallerIsBetter\`: median task_s, work_s, cpu_s) through benchmark-action/github-action-benchmark onto \`gh-pages\`. That chart is fed only by this workflow.
+          EOF
+          gh pr create --base main --head "$branch" \
+            --title "Benchmark Airflow ${AIRFLOW_VERSION} (GitHub-hosted runner)" \
+            --body-file /tmp/pr-body.md
+
+      - name: Publish trend chart
+        if: steps.target.outputs.should_run == 'true'
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Airflow transfer bench
+          tool: customSmallerIsBetter
+          output-file-path: ${{ steps.bench.outputs.run_dir }}/benchmark.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          # Do not comment on commits. The results PR is the only review surface.
+          comment-on-alert: false
+          fail-on-alert: false
+          summary-always: true
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/bench

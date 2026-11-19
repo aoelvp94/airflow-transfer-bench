@@ -1,6 +1,7 @@
 package dev.transferbench;
 
 import java.io.ByteArrayOutputStream;
+import java.lang.management.ManagementFactory;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -52,6 +53,7 @@ public final class TransferJava implements InputTask<TransferJava.Input> {
   public void execute(Context context, Client client, Input input) throws Exception {
     Plan in = Plan.of(input.plan);
     long start = System.nanoTime();
+    long cpuStart = processCpuNanos();
     org.apache.airflow.sdk.Connection pg = client.getConnection(in.postgresConnId());
     org.apache.airflow.sdk.Connection s3c = client.getConnection(in.s3ConnId());
 
@@ -105,6 +107,11 @@ public final class TransferJava implements InputTask<TransferJava.Input> {
     metrics.put("key", key);
     metrics.put("first_row_s", round(firstRow));
     metrics.put("duration_s", round(seconds(start)));
+    long cpuEnd = processCpuNanos();
+    if (cpuStart >= 0 && cpuEnd >= cpuStart) {
+      // Process CPU over the same window as duration_s (the work), not task startup.
+      metrics.put("cpu_s", round((cpuEnd - cpuStart) / 1e9));
+    }
     metrics.put("peak_rss_mb", peakRssMb());
     client.setXCom(metrics);
   }
@@ -182,6 +189,23 @@ public final class TransferJava implements InputTask<TransferJava.Input> {
         // best effort
       }
     }
+  }
+
+  /**
+   * Process CPU time in nanoseconds, or -1 when the JVM does not report it.
+   * {@code com.sun.management.OperatingSystemMXBean#getProcessCpuTime} is a
+   * HotSpot extension; calling it reflectively keeps the bundle compiling on
+   * any JDK 17.
+   */
+  static long processCpuNanos() {
+    try {
+      Object os = ManagementFactory.getOperatingSystemMXBean();
+      Object nanos = os.getClass().getMethod("getProcessCpuTime").invoke(os);
+      if (nanos instanceof Long value && value >= 0) return value;
+    } catch (Exception ignored) {
+      // not a HotSpot JVM, or the extension is missing
+    }
+    return -1L;
   }
 
   static double peakRssMb() {
