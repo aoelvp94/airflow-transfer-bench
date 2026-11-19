@@ -41,7 +41,8 @@ if int(os.environ["RUNS"]) < 5:
 PY
 
 mkdir -p results
-chmod a+rwx results
+# The scheduler writes this tree as uid 50000 unless AIRFLOW_UID is the runner.
+chmod -R a+rwX results
 
 echo "GitHub-hosted runners are noisy. This run tracks trends, not absolute speed."
 make up

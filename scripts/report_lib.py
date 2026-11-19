@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
 import re
 import statistics
@@ -671,8 +672,20 @@ def _trend_table(group: list[dict], metric: str, digits: int) -> list[str]:
     return rows
 
 
+def write_text_atomic(path: Path, text: str) -> None:
+    """Replace ``path`` when the directory is writable, even if the file is not.
+
+    ``results/`` is shared with the Airflow user. Truncating a file owned by
+    someone else needs write permission on that file; replacing it only needs
+    write permission on the directory.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(text)
+    os.replace(temporary, path)
+
+
 def write_index(root: Path) -> str:
     text = render_index(discover_runs(root))
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "README.md").write_text(text)
+    write_text_atomic(root / "README.md", text)
     return text

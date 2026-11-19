@@ -192,20 +192,47 @@ public final class TransferJava implements InputTask<TransferJava.Input> {
   }
 
   /**
-   * Process CPU time in nanoseconds, or -1 when the JVM does not report it.
-   * {@code com.sun.management.OperatingSystemMXBean#getProcessCpuTime} is a
-   * HotSpot extension; calling it reflectively keeps the bundle compiling on
-   * any JDK 17.
+   * Process CPU time in nanoseconds (user + system), or -1 when it cannot be read.
+   * The HotSpot counter is preferred. Reflection goes through the exported
+   * {@code com.sun.management.OperatingSystemMXBean} interface: resolving
+   * {@code getProcessCpuTime} on the concrete class fails, because that class
+   * lives in the unexported {@code com.sun.management.internal} package.
+   * On Linux the fallback is utime+stime from {@code /proc/self/stat}
+   * (USER_HZ is 100, so each tick is 10 ms).
    */
   static long processCpuNanos() {
+    long fromBean = hotspotProcessCpuNanos();
+    if (fromBean >= 0) return fromBean;
+    return linuxProcCpuNanos();
+  }
+
+  static long hotspotProcessCpuNanos() {
     try {
       Object os = ManagementFactory.getOperatingSystemMXBean();
-      Object nanos = os.getClass().getMethod("getProcessCpuTime").invoke(os);
+      Class<?> type = Class.forName("com.sun.management.OperatingSystemMXBean");
+      if (!type.isInstance(os)) return -1L;
+      Object nanos = type.getMethod("getProcessCpuTime").invoke(os);
       if (nanos instanceof Long value && value >= 0) return value;
     } catch (Exception ignored) {
-      // not a HotSpot JVM, or the extension is missing
+      // not a HotSpot JVM, or jdk.management is not resolvable
     }
     return -1L;
+  }
+
+  static long linuxProcCpuNanos() {
+    try {
+      String stat = Files.readString(Path.of("/proc/self/stat"));
+      int end = stat.lastIndexOf(')');
+      if (end < 0 || end + 2 >= stat.length()) return -1L;
+      String[] fields = stat.substring(end + 2).trim().split("\\s+");
+      // After comm: state, ppid, pgrp, session, tty, tpgid, flags,
+      // minflt, cminflt, majflt, cmajflt, utime, stime.
+      if (fields.length < 13) return -1L;
+      long ticks = Long.parseLong(fields[11]) + Long.parseLong(fields[12]);
+      return ticks * 10_000_000L;
+    } catch (Exception ignored) {
+      return -1L;
+    }
   }
 
   static double peakRssMb() {

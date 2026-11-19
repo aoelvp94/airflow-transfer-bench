@@ -20,6 +20,7 @@ import subprocess
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
+from io import StringIO
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -46,6 +47,7 @@ from report_lib import (  # noqa: E402
     split_warmup,
     summarize_tasks,
     write_index,
+    write_text_atomic,
 )
 
 DAG_ID = "transfer_bench"
@@ -357,11 +359,12 @@ def build_environment(
 
 
 def write_csv(path: Path, rows: list[dict]) -> None:
-    with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(CSV_FIELDS), extrasaction="ignore")
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({key: ("" if row.get(key) is None else row.get(key)) for key in CSV_FIELDS})
+    buffer = StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=list(CSV_FIELDS), extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({key: ("" if row.get(key) is None else row.get(key)) for key in CSV_FIELDS})
+    write_text_atomic(path, buffer.getvalue())
 
 
 def order_runs(records: list[dict]) -> list[str]:
@@ -472,13 +475,13 @@ def main() -> None:
     runs_dir.mkdir(parents=True, exist_ok=True)
 
     def dump(path: Path, payload) -> None:
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        write_text_atomic(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
     dump(run_dir / "environment.json", meta)
     stats_doc = {"tasks": task_stats, "md5": meta["md5"]}
     dump(run_dir / "stats.json", stats_doc)
     summary = render_summary_md(meta, task_stats, md5_info)
-    (run_dir / "summary.md").write_text(summary)
+    write_text_atomic(run_dir / "summary.md", summary)
     ordered_records = sorted(records, key=lambda r: (r.get("started") or "", TRANSFER_TASK_IDS.index(r["task_id"]) if r["task_id"] in TRANSFER_TASK_IDS else 99))
     write_csv(run_dir / "results.csv", ordered_records)
     dump(run_dir / "benchmark.json", benchmark_payload(meta, task_stats))
