@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Trigger N runs of transfer_bench (they queue; max_active_runs=1) and wait for all to finish.
-# The earliest run is a warm-up: `make report` keeps it in the raw files and
+# The earliest run is a warm-up: `just report` keeps it in the raw files and
 # drops it from the medians. Default N is 5. Task success and the MD5 gate
-# are checked by `make report`, which exits non-zero on a mismatch.
-# Runs inside the airflow-scheduler container:  make bench
+# are checked by `just report`, which exits non-zero on a mismatch.
+# Runs inside the airflow-scheduler container:  just bench
 set -euo pipefail
 
 RUNS="${1:-5}"

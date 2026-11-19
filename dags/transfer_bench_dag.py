@@ -16,7 +16,7 @@ language from hiding the others' numbers. ``summarize`` downloads every
 object and fails the run unless the four hand-written implementations
 produced byte-identical CSV (same MD5 and the same size).
 
-Schedule: manual only (``make bench``). Nothing runs downstream.
+Schedule: manual only (``just bench``). Nothing runs downstream.
 """
 
 from __future__ import annotations

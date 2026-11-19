@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Collect transfer_bench results.
 
-Run inside the scheduler container (`make report`). Raw per-run CSV/JSON and
+Run inside the scheduler container (`just report`). Raw per-run CSV/JSON and
 summary.md are written under results/ and are gitignored. The committed record
 is RESULTS.md at the repo root: one changelog entry per run. The same dag run
 ids replace that entry.
@@ -464,7 +464,7 @@ def main() -> None:
     if meta["git_dirty"]:
         warnings.append("git tree was dirty; this run is not comparable with a clean commit")
     if meta["git_sha"] in ("", "unknown"):
-        warnings.append("git SHA was not provided (make report passes BENCH_GIT_SHA)")
+        warnings.append("git SHA was not provided (just report passes BENCH_GIT_SHA)")
     missing_cpu = [
         task for task in TRANSFER_TASK_IDS
         if any(r["task_id"] == task and r["run_id"] in measured_ids and r.get("cpu_s") is None for r in records)

@@ -56,7 +56,7 @@ of 3 runs:
 | python_sql_to_s3 | CPython 3.12.16 | 14.03 | 13.05 | 0.82 | 10.7 | 1349 |
 
 All five files had the same MD5. Treat these numbers as one machine's numbers
-and run it yourself. The very first run after `make up` was several times
+and run it yourself. The very first run after `just up` was several times
 slower for every task (cold containers), so use `RUNS ≥ 3` and medians.
 
 That table is Aldo's local run. It is not an entry in [`RESULTS.md`](RESULTS.md),
@@ -66,7 +66,7 @@ recorded. Do not treat it as a published data point or extend it.
 ## Published results
 
 The committed record is [`RESULTS.md`](RESULTS.md): a changelog, newest entry
-first, one section per run. `make report` prepends that section (the same
+first, one section per run. `just report` prepends that section (the same
 Airflow dag run ids replace it) and writes the raw files locally:
 
 ```
@@ -100,7 +100,7 @@ Airflow and the three SDK versions are image build args. The defaults are
 **3.4.0** and **1.0.0**:
 
 ```bash
-AIRFLOW_VERSION=3.4.0 GO_SDK_VERSION=1.0.0 JAVA_SDK_VERSION=1.0.0 TS_SDK_VERSION=1.0.0 make up
+AIRFLOW_VERSION=3.4.0 GO_SDK_VERSION=1.0.0 JAVA_SDK_VERSION=1.0.0 TS_SDK_VERSION=1.0.0 just up
 ```
 
 [`.github/workflows/benchmark.yml`](.github/workflows/benchmark.yml) does two jobs:
@@ -142,21 +142,26 @@ with Airflow 3.4.0). A newer Airflow may need a newer date; pass it on
 
 ## Quick start
 
-Requirements: Docker with Compose v2. Nothing else; all bundles are built in
-the image.
+Requirements: Docker with Compose v2, and [`just`](https://github.com/casey/just)
+(`cargo install just`, or the packages and GitHub action listed in the
+[just docs](https://just.systems/man/en/packages.html)). Nothing else; all
+bundles are built in the image.
 
 ```bash
-make up                 # build image (~8 min first time), start Airflow, Postgres, S3
-make seed ROWS=1000000  # create bench.events
-make bench              # 5 runs; the first is a discarded warm-up
-make report             # gitignored results/ plus one RESULTS.md entry
+just up                 # build image (~8 min first time), start Airflow, Postgres, S3
+just seed 1000000       # create bench.events (default ROWS=1000000)
+just bench              # 5 runs; the first is a discarded warm-up (default RUNS=5)
+just report             # gitignored results/ plus one RESULTS.md entry
 ```
+
+`just seed 200000` and `ROWS=200000 just seed` are the same. `just bench 5`
+and `RUNS=5 just bench` are the same. `just` with no arguments lists the recipes.
 
 Airflow UI: <http://localhost:8080> (local-only setup, every user is admin).
 
 Tune a run with DAG params (`fetch_size`, `part_size_mb`, `source_table`) from
-the UI, or try other sizes with `make seed ROWS=10000000`. `BENCH_CPUS` and
-`BENCH_MEM` change the scheduler container limits.
+the UI, or try other sizes with `just seed 10000000`. `BENCH_CPUS` and
+`BENCH_MEM` change the scheduler container limits (`BENCH_CPUS=2 BENCH_MEM=6g just up`).
 
 ## How to contribute a run
 
@@ -165,33 +170,33 @@ nothing else. Do not edit the Apple M4 sample above, and do not add that
 sample as an entry. Do not commit `results/`; those files are local.
 
 ```bash
-make up
-make seed ROWS=1000000          # or another size; the metadata records the size you actually loaded
-make bench                      # RUNS=5
-make report                     # captures the environment, checks MD5, prepends RESULTS.md
+just up
+just seed 1000000               # or another size; the metadata records the size you actually loaded
+just bench                      # RUNS=5
+just report                     # captures the environment, checks MD5, prepends RESULTS.md
 git add RESULTS.md
 git status                      # only RESULTS.md
 ```
 
-Open a pull request. `make report` reads the environment from the running
+Open a pull request. `just report` reads the environment from the running
 container and from the git checkout: Airflow version, each SDK version, Go,
 JDK, Node, and CPython versions, CPU model, the scheduler CPU and memory
 limits, rows, `fetch_size`, `part_size`, git SHA, and `n`. That metadata is
 the compact line in the new `RESULTS.md` section. The raw CSV and JSON stay
 under `results/` on your machine.
 
-`BENCH_ENV_SLUG=apple-m4 make report` overrides the slug derived from the CPU
-model. The slug is part of the section heading. Re-running `make report` on
+`BENCH_ENV_SLUG=apple-m4 just report` overrides the slug derived from the CPU
+model. The slug is part of the section heading. Re-running `just report` on
 the same dag run ids replaces that section. A different set of run ids is
 prepended. Raw files for a repeated date and slug still land in
 `results/<version>/<date>-<slug>/`, with a numeric suffix when the run ids differ.
 
 `AIRFLOW_VERSION`, `GO_SDK_VERSION`, `JAVA_SDK_VERSION`, and `TS_SDK_VERSION`
-select the image. Change them before `make up`, not after, or the metadata
+select the image. Change them before `just up`, not after, or the metadata
 will describe a build you did not run.
 
-`make report` summarizes the latest `RUNS` dag runs. Use a fresh volume
-(`make clean` deletes the Postgres and S3 data) when an earlier failed attempt
+`just report` summarizes the latest `RUNS` dag runs. Use a fresh volume
+(`just clean` deletes the Postgres and S3 data) when an earlier failed attempt
 is still in the metadata DB and you do not want it in the window.
 
 ## Layout
@@ -208,6 +213,7 @@ impls/
   typescript/src/main.ts     TS handler   (@apache-airflow/ts-sdk 1.0.0, postgres.js, AWS SDK v3)
 docker/airflow.Dockerfile    multi-stage: builds the 3 bundles, adds JRE 17 + Node 22 to apache/airflow:3.4.0
 docker-compose.yml           Airflow (LocalExecutor) + Postgres 17 + Versity S3 Gateway
+justfile                     up, seed, bench, report, and the other recipes
 scripts/                     bucket setup, run loop, report, CI entrypoint
 RESULTS.md                   committed changelog (one section per run)
 results/                     local raw output, gitignored except .gitkeep

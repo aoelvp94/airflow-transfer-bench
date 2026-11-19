@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the image, seed a small table, run the bench, write results/.
-# GitHub Actions is the caller. A laptop run is `make up && make seed && make bench && make report`.
+# GitHub Actions is the caller. A laptop run is `just up && just seed && just bench && just report`.
 #
 # The scheduler cap (BENCH_CPUS / BENCH_MEM) is tighter than the Apple M4
 # sample's 2 CPU / 6 GB on purpose: a GitHub-hosted runner also has Postgres
@@ -47,7 +47,8 @@ chmod -R a+rwX results
 chmod a+rw RESULTS.md
 
 echo "GitHub-hosted runners are noisy. This run tracks trends, not absolute speed."
-make up
-make seed ROWS="$ROWS"
-make bench RUNS="$RUNS"
-make report
+command -v just >/dev/null || { echo "just is not installed (CI uses extractions/setup-just)" >&2; exit 1; }
+just up
+just seed "$ROWS"
+just bench "$RUNS"
+just report

@@ -4,7 +4,7 @@
 #
 # Build args default to Airflow 3.4.0 and Task SDKs 1.0.0. They are versions,
 # not credentials. docker-compose.yml forwards the same names from the
-# environment (see the Makefile).
+# environment (see the justfile).
 
 ARG AIRFLOW_VERSION=3.4.0
 ARG AIRFLOW_PYTHON=3.12
