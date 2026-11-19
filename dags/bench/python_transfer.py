@@ -21,6 +21,15 @@ def peak_rss_mb() -> float:
     return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1)
 
 
+def cpu_time_s() -> float:
+    """Process CPU seconds so far (user + system), including child processes."""
+    total = 0.0
+    for who in (resource.RUSAGE_SELF, resource.RUSAGE_CHILDREN):
+        usage = resource.getrusage(who)
+        total += usage.ru_utime + usage.ru_stime
+    return total
+
+
 class MultipartWriter:
     """Buffers bytes and uploads fixed-size parts; mirrors the other languages."""
 
@@ -69,6 +78,7 @@ def transfer(
     s3_conn_id: str,
 ) -> dict:
     start = time.perf_counter()
+    cpu0 = cpu_time_s()
     key = f"{key_prefix}/python.csv"
     s3 = S3Hook(aws_conn_id=s3_conn_id).get_conn()
     conn = PostgresHook(postgres_conn_id=postgres_conn_id).get_conn()
@@ -108,5 +118,7 @@ def transfer(
         "key": key,
         "first_row_s": round(first_row_s or 0.0, 4),
         "duration_s": round(time.perf_counter() - start, 4),
+        # Same window as duration_s: the transfer, not the Airflow task startup.
+        "cpu_s": round(cpu_time_s() - cpu0, 4),
         "peak_rss_mb": peak_rss_mb(),
     }

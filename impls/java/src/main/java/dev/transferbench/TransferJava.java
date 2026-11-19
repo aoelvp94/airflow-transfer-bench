@@ -1,6 +1,7 @@
 package dev.transferbench;
 
 import java.io.ByteArrayOutputStream;
+import java.lang.management.ManagementFactory;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -52,6 +53,7 @@ public final class TransferJava implements InputTask<TransferJava.Input> {
   public void execute(Context context, Client client, Input input) throws Exception {
     Plan in = Plan.of(input.plan);
     long start = System.nanoTime();
+    long cpuStart = processCpuNanos();
     org.apache.airflow.sdk.Connection pg = client.getConnection(in.postgresConnId());
     org.apache.airflow.sdk.Connection s3c = client.getConnection(in.s3ConnId());
 
@@ -105,6 +107,11 @@ public final class TransferJava implements InputTask<TransferJava.Input> {
     metrics.put("key", key);
     metrics.put("first_row_s", round(firstRow));
     metrics.put("duration_s", round(seconds(start)));
+    long cpuEnd = processCpuNanos();
+    if (cpuStart >= 0 && cpuEnd >= cpuStart) {
+      // Process CPU over the same window as duration_s (the work), not task startup.
+      metrics.put("cpu_s", round((cpuEnd - cpuStart) / 1e9));
+    }
     metrics.put("peak_rss_mb", peakRssMb());
     client.setXCom(metrics);
   }
@@ -181,6 +188,50 @@ public final class TransferJava implements InputTask<TransferJava.Input> {
       } catch (Exception ignored) {
         // best effort
       }
+    }
+  }
+
+  /**
+   * Process CPU time in nanoseconds (user + system), or -1 when it cannot be read.
+   * The HotSpot counter is preferred. Reflection goes through the exported
+   * {@code com.sun.management.OperatingSystemMXBean} interface: resolving
+   * {@code getProcessCpuTime} on the concrete class fails, because that class
+   * lives in the unexported {@code com.sun.management.internal} package.
+   * On Linux the fallback is utime+stime from {@code /proc/self/stat}
+   * (USER_HZ is 100, so each tick is 10 ms).
+   */
+  static long processCpuNanos() {
+    long fromBean = hotspotProcessCpuNanos();
+    if (fromBean >= 0) return fromBean;
+    return linuxProcCpuNanos();
+  }
+
+  static long hotspotProcessCpuNanos() {
+    try {
+      Object os = ManagementFactory.getOperatingSystemMXBean();
+      Class<?> type = Class.forName("com.sun.management.OperatingSystemMXBean");
+      if (!type.isInstance(os)) return -1L;
+      Object nanos = type.getMethod("getProcessCpuTime").invoke(os);
+      if (nanos instanceof Long value && value >= 0) return value;
+    } catch (Exception ignored) {
+      // not a HotSpot JVM, or jdk.management is not resolvable
+    }
+    return -1L;
+  }
+
+  static long linuxProcCpuNanos() {
+    try {
+      String stat = Files.readString(Path.of("/proc/self/stat"));
+      int end = stat.lastIndexOf(')');
+      if (end < 0 || end + 2 >= stat.length()) return -1L;
+      String[] fields = stat.substring(end + 2).trim().split("\\s+");
+      // After comm: state, ppid, pgrp, session, tty, tpgid, flags,
+      // minflt, cminflt, majflt, cmajflt, utime, stime.
+      if (fields.length < 13) return -1L;
+      long ticks = Long.parseLong(fields[11]) + Long.parseLong(fields[12]);
+      return ticks * 10_000_000L;
+    } catch (Exception ignored) {
+      return -1L;
     }
   }
 

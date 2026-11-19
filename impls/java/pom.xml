@@ -12,8 +12,10 @@
   <properties>
     <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <!-- Overridable from the image build: -Dairflow.sdk.version=... -->
     <airflow.sdk.version>1.0.0</airflow.sdk.version>
-    <!-- Must be >= the supervisor schema version of the Airflow release (3.4.0). -->
+    <!-- Must be >= the supervisor schema version of the Airflow release (3.4.0).
+         Overridable: -Dairflow.supervisor.schema.version=YYYY-MM-DD -->
     <airflow.supervisor.schema.version>2026-10-30</airflow.supervisor.schema.version>
   </properties>
 

@@ -4,3 +4,5 @@ impls/java/target
 impls/go/dist
 results
 .git
+.github
+tests

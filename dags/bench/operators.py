@@ -8,7 +8,7 @@ import time
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.providers.amazon.aws.transfers.sql_to_s3 import SqlToS3Operator
 
-from bench.python_transfer import peak_rss_mb
+from bench.python_transfer import cpu_time_s, peak_rss_mb
 
 
 class TimedSqlToS3Operator(SqlToS3Operator):
@@ -21,8 +21,10 @@ class TimedSqlToS3Operator(SqlToS3Operator):
 
     def execute(self, context):
         start = time.perf_counter()
+        cpu0 = cpu_time_s()
         super().execute(context)
         duration = time.perf_counter() - start
+        cpu = cpu_time_s() - cpu0
         head = S3Hook(aws_conn_id=self.aws_conn_id).head_object(key=self.s3_key, bucket_name=self.s3_bucket)
         rows = context["ti"].xcom_pull(task_ids="prepare")["row_count"]
         return {
@@ -35,5 +37,6 @@ class TimedSqlToS3Operator(SqlToS3Operator):
             "key": self.s3_key,
             "first_row_s": None,
             "duration_s": round(duration, 4),
+            "cpu_s": round(cpu, 4),
             "peak_rss_mb": peak_rss_mb(),
         }

@@ -107,6 +107,7 @@ const round = (n: number) => Math.round(n * 10000) / 10000;
 
 async function transfer({ plan: args }: TransferArgs) {
   const start = performance.now();
+  const cpuStart = process.cpuUsage();
   const client = getClient();
   const pg = await client.getConnectionOrThrow(args.postgres_conn_id);
   const s3c = await client.getConnectionOrThrow(args.s3_conn_id);
@@ -148,6 +149,7 @@ async function transfer({ plan: args }: TransferArgs) {
     await sql.end();
   }
 
+  const cpu = process.cpuUsage(cpuStart);
   return {
     language: "typescript",
     impl: "postgres.js cursor + AWS SDK v3 multipart",
@@ -158,6 +160,8 @@ async function transfer({ plan: args }: TransferArgs) {
     key,
     first_row_s: round(firstRow),
     duration_s: round((performance.now() - start) / 1000),
+    // Process CPU over the same window as duration_s. cpuUsage is microseconds.
+    cpu_s: round((cpu.user + cpu.system) / 1e6),
     peak_rss_mb: round(process.resourceUsage().maxRSS / 1024), // KiB -> MiB
   };
 }

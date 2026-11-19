@@ -42,3 +42,12 @@ TRANSFER_TASK_IDS = [
     "transfer_python",
     *LANGUAGE_QUEUES,
 ]
+
+# Hand-written implementations share one CSV grammar. summarize fails the run
+# unless the objects they upload are byte-identical (MD5 and size).
+BYTE_IDENTICAL_TASK_IDS = [
+    "transfer_python",
+    "transfer_go",
+    "transfer_java",
+    "transfer_typescript",
+]

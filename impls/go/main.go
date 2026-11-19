@@ -41,6 +41,7 @@ type Plan struct {
 
 func transfer(actx airflow.Context, in Plan) (any, error) {
 	start := time.Now()
+	cpuStart := cpuSeconds()
 	client := actx.Client()
 
 	pgConn, err := client.GetConnection(actx, in.PostgresConnID)
@@ -125,6 +126,7 @@ func transfer(actx airflow.Context, in Plan) (any, error) {
 		"key":         key,
 		"first_row_s": round(firstRow.Seconds()),
 		"duration_s":  round(time.Since(start).Seconds()),
+		"cpu_s":       round(cpuSeconds() - cpuStart),
 		"peak_rss_mb": peakRSSMB(),
 	}, nil
 }
@@ -239,6 +241,20 @@ func newS3(c sdk.Connection) *s3.Client {
 		opts.BaseEndpoint = aws.String(ep)
 	}
 	return s3.New(opts)
+}
+
+// cpuSeconds is process CPU time (user + system) for this handler.
+// The delta over transfer() matches the work_s window, not Airflow's task_s.
+func cpuSeconds() float64 {
+	var ru syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+		return 0
+	}
+	return timevalSeconds(ru.Utime) + timevalSeconds(ru.Stime)
+}
+
+func timevalSeconds(tv syscall.Timeval) float64 {
+	return float64(tv.Sec) + float64(tv.Usec)/1e6
 }
 
 func peakRSSMB() float64 {
